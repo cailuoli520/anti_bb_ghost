@@ -116,6 +116,11 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
         if (name.startsWith("com.lptiyu.tanke") && name.contains("Splash")) return true
         if (name.startsWith("com.lptiyu.tanke.utils.q2")) return true
         if (name.startsWith("com.lptiyu.tanke.utils.v0")) return true
+        if (name.startsWith("com.lptiyu.tanke.activities.login.LoginActivity")) return true
+        if (name == "com.lptiyu.tanke.activities.BeforeLoginActivity") return true
+        if (name == "com.lptiyu.tanke.activities.LoginHomeActivity") return true
+        if (name == "com.lptiyu.tanke.activities.QrLoginActivity") return true
+        if (name == "cn.sharesdk.framework.ShareSDK") return true
         if (name.startsWith("cn.sharesdk.wechat")) return true
         if (name.startsWith("cn.sharesdk.framework.PlatformDb")) return true
         if (name.startsWith("h.x.c.q.f2")) return true

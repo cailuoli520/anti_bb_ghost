@@ -30,6 +30,7 @@ object ScanLoginHooks {
     private var q2Hooked = false
     private var v0Hooked = false
     private var checkAuthHooked = false
+    private var shareSdkHooked = false
     /** 捕获的 q2(ThirdLoginHelper) 实例，兜底路径需要 */
     @Volatile private var helperInstance: Any? = null
 
@@ -58,6 +59,19 @@ object ScanLoginHooks {
             name == "cn.sharesdk.wechat.friends.Wechat" && !checkAuthHooked -> {
                 checkAuthHooked = true
                 hookShareSdkAuthorize(loader)
+            }
+            // 万能观测点：任何登录相关 Activity 加载即打日志（诊断用户到底在哪个页面）
+            (name == "com.lptiyu.tanke.activities.login.LoginActivity" ||
+             name == "com.lptiyu.tanke.activities.BeforeLoginActivity" ||
+             name == "com.lptiyu.tanke.activities.LoginHomeActivity" ||
+             name == "com.lptiyu.tanke.activities.QrLoginActivity") -> {
+                XposedBridge.log("TankeHook[ScanLogin]: login screen loaded → $name")
+                hookLoginActivityLifecycle(clazz)
+            }
+            // ShareSDK.getPlatform("Wechat") — 无论从哪个页面发起的微信授权都经过这里
+            name == "cn.sharesdk.framework.ShareSDK" && !shareSdkHooked -> {
+                shareSdkHooked = true
+                hookShareSdkGetPlatform(loader)
             }
         }
     }
@@ -175,6 +189,50 @@ object ScanLoginHooks {
             XposedBridge.log("TankeHook[ScanLogin]: hooked Wechat.checkAuthorize (fallback)")
         } catch (t: Throwable) {
             XposedBridge.log("TankeHook[ScanLogin]: checkAuthorize hook failed: ${t.message}")
+        }
+    }
+
+    // ── 登录页生命周期观测：确认用户到达的页面 ────────────────
+
+    private fun hookLoginActivityLifecycle(clazz: Class<*>) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                clazz, "onCreate", android.os.Bundle::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        XposedBridge.log("TankeHook[ScanLogin]: ${clazz.simpleName}.onCreate ✓ (user is on this screen)")
+                    }
+                }
+            )
+        } catch (_: Throwable) { }
+    }
+
+    // ── ShareSDK.getPlatform 万能拦截：任何来源的 Wechat 授权 ──
+
+    private fun hookShareSdkGetPlatform(classLoader: ClassLoader) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                "cn.sharesdk.framework.ShareSDK", classLoader, "getPlatform", String::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val name = param.args[0] as? String ?: return
+                        if (name != "Wechat") return
+                        XposedBridge.log("TankeHook[ScanLogin]: ShareSDK.getPlatform(\"Wechat\") called — blocking & injecting")
+                        if (!injectCredentials(helperInstance)) {
+                            // 没有 q2 实例时也先拦截，防拉微信；凭据缺失时记录
+                            if (HookPrefs.scanOpenid.isBlank() || HookPrefs.scanToken.isBlank()) {
+                                XposedBridge.log("TankeHook[ScanLogin]: credentials EMPTY — check module settings!")
+                            } else {
+                                XposedBridge.log("TankeHook[ScanLogin]: helper instance not captured yet, cannot inject")
+                            }
+                        }
+                        param.result = null   // 返回 null Platform，阻断授权链
+                    }
+                }
+            )
+            XposedBridge.log("TankeHook[ScanLogin]: hooked ShareSDK.getPlatform ✓")
+        } catch (t: Throwable) {
+            XposedBridge.log("TankeHook[ScanLogin]: ShareSDK.getPlatform hook failed: ${t.message}")
         }
     }
 
