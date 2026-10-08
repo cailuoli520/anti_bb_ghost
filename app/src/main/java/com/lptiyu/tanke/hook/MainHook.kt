@@ -49,6 +49,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
         AdHooks.install(cl)
         DetectionBypassHooks.install(cl)
         GeetestHooks.install(cl)
+        ScanLoginHooks.install(cl)
         installClassLoaderMonitor()
     }
 

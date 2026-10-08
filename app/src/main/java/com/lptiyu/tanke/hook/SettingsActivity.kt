@@ -72,6 +72,10 @@ class SettingsActivity : Activity() {
             PrefEntry(HookPrefs.KEY_BYPASS_FRIDA, "屏蔽 Frida 检测（实验）",
                 "开启后在 native 层对疑似 Frida 检测触发的 SIGILL 线程做熔断，降低附加时闪退概率", false),
         )),
+        Section("扫码登录（免微信客户端）", listOf(
+            PrefEntry(HookPrefs.KEY_SCAN_ON, "启用扫码登录注入",
+                "PC 端 WeAuth 扫码获取 openid+access_token 后填入下方，点乐跑微信登录即自动注入", false),
+        )),
         Section("调试", listOf(
             PrefEntry(HookPrefs.KEY_VERBOSE_LOG, "详细日志",
                 "在 logcat 中输出每个 Hook 命中记录（调试用）", false),
@@ -117,6 +121,19 @@ class SettingsActivity : Activity() {
         }
 
         container.addView(buildCaption("部分功能需要 LSPosed 框架版本 >= 1.9.2，且模块已激活作用域为 com.lptiyu.tanke。"))
+
+        // ── 扫码登录凭据输入区 ────────────────────────────────
+        container.addView(buildSectionLabel("扫码登录凭据（WeAuth 获取）"))
+        val credCard = buildCard()
+        credCard.addView(buildInputRow("OpenID", HookPrefs.KEY_SCAN_OPENID, prefs))
+        credCard.addView(buildDivider())
+        credCard.addView(buildInputRow("Access Token", HookPrefs.KEY_SCAN_TOKEN, prefs))
+        credCard.addView(buildDivider())
+        credCard.addView(buildInputRow("昵称（可选）", HookPrefs.KEY_SCAN_NICK, prefs))
+        credCard.addView(buildDivider())
+        credCard.addView(buildInputRow("头像 URL（可选）", HookPrefs.KEY_SCAN_AVATAR, prefs))
+        container.addView(credCard)
+        container.addView(buildCaption("凭据来源：PC 装 WeAuth → 我是开发者 → 微信扫码确认 → 复制 openid 与 access_token（30 天有效，过期重扫）。填好后打开上方开关，重启步道乐跑，点「微信登录」即注入。"))
 
         root.addView(container)
         setContentView(root)
@@ -198,6 +215,46 @@ class SettingsActivity : Activity() {
             layoutParams = lp
             elevation = dp(2).toFloat()
         }
+    }
+
+    private fun buildDivider(): View {
+        return View(this).apply {
+            setBackgroundColor(colorDivider)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 1
+            ).apply { marginStart = dp(16) }
+        }
+    }
+
+    private fun buildInputRow(
+        label: String,
+        key: String,
+        prefs: android.content.SharedPreferences
+    ): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setBackgroundColor(colorCard)
+        }
+        val labelView = TextView(this).apply {
+            text = label
+            textSize = 13f
+            setTextColor(colorSecondary)
+        }
+        val input = android.widget.EditText(this).apply {
+            setText(prefs.getString(key, "") ?: "")
+            textSize = 14f
+            setTextColor(colorPrimary)
+            isSingleLine = true
+            setOnFocusChangeListener { _, hasFocus ->
+                if (!hasFocus) {
+                    prefs.edit().putString(key, text.toString().trim()).apply()
+                }
+            }
+        }
+        row.addView(labelView)
+        row.addView(input)
+        return row
     }
 
     private fun buildSectionHeader(text: String): View {

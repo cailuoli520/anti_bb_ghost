@@ -30,6 +30,12 @@ object HookPrefs {
     // 调试
     const val KEY_VERBOSE_LOG      = "verbose_log"
     const val KEY_LOG_REGISTER_NATIVES = "log_register_natives"
+    // 扫码登录
+    const val KEY_SCAN_ON      = "scan_login_on"
+    const val KEY_SCAN_OPENID  = "scan_login_openid"
+    const val KEY_SCAN_TOKEN   = "scan_login_token"
+    const val KEY_SCAN_NICK    = "scan_login_nickname"
+    const val KEY_SCAN_AVATAR  = "scan_login_avatar"
 
     // ── 运行时开关（全部默认开启）────────────────────────────────
     @Volatile var bypassSsl      = true
@@ -44,6 +50,12 @@ object HookPrefs {
     @Volatile var bypassFrida    = false
     @Volatile var verboseLog     = false
     @Volatile var logRegisterNatives = false
+    // 扫码登录运行时值
+    @Volatile var scanOn     = false
+    @Volatile var scanOpenid = ""
+    @Volatile var scanToken  = ""
+    @Volatile var scanNickname = ""
+    @Volatile var scanAvatar = ""
 
     @Suppress("DEPRECATION")
     fun load(modulePackage: String = "com.lptiyu.tanke.hook") {
@@ -63,10 +75,16 @@ object HookPrefs {
             bypassFrida    = xsp.getBoolean(KEY_BYPASS_FRIDA,    false)
             verboseLog     = xsp.getBoolean(KEY_VERBOSE_LOG,     false)
             logRegisterNatives = xsp.getBoolean(KEY_LOG_REGISTER_NATIVES, false)
+            scanOn     = xsp.getBoolean(KEY_SCAN_ON, false)
+            scanOpenid = xsp.getString(KEY_SCAN_OPENID, "") ?: ""
+            scanToken  = xsp.getString(KEY_SCAN_TOKEN,  "") ?: ""
+            scanNickname = xsp.getString(KEY_SCAN_NICK, "") ?: ""
+            scanAvatar = xsp.getString(KEY_SCAN_AVATAR, "") ?: ""
             XposedBridge.log(
                 "TankeHook: prefs — ssl=$bypassSsl dns=$disableHttpdns ads=$disableAds " +
                 "splash=$skipSplashAd stack=$fakeStack proxy=$bypassProxy root=$bypassRoot " +
-                "dbg=$bypassDebugger vapp=$bypassVapp frida=$bypassFrida verbose=$verboseLog rnLog=$logRegisterNatives"
+                "dbg=$bypassDebugger vapp=$bypassVapp frida=$bypassFrida verbose=$verboseLog rnLog=$logRegisterNatives " +
+                "scanOn=$scanOn scanOpenid=${if (scanOpenid.isBlank()) "-" else scanOpenid.take(6) + ".."}"
             )
         } catch (e: Throwable) {
             XposedBridge.log("TankeHook: prefs load failed (using defaults): ${e.message}")
