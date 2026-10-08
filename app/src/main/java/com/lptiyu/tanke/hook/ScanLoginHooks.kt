@@ -89,22 +89,40 @@ object ScanLoginHooks {
                     }
                 }
             )
+            // 主入口：LoginActivity 微信按钮 → q2.g("Wechat") → ShareSDK.showUser
+            XposedHelpers.findAndHookMethod(
+                "com.lptiyu.tanke.utils.q2", classLoader, "g", String::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val plat = param.args[0] as? String ?: return
+                        if (plat != "Wechat" && plat != "WechatFavorites" && plat != q2WechatName()) return
+                        if (!injectCredentials(param.thisObject)) return
+                        param.result = null   // 跳过 showUser 整条授权链
+                    }
+                }
+            )
+            // 次入口（LoginHomeActivity 旧路径）：q2.e()
             XposedHelpers.findAndHookMethod(
                 "com.lptiyu.tanke.utils.q2", classLoader, "e",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         if (!injectCredentials(param.thisObject)) return
-                        param.result = null   // 跳过原逻辑：不检查微信、不拉起 SendAuth
+                        param.result = null
                     }
                 }
             )
-            XposedBridge.log("TankeHook[ScanLogin]: hooked q2 ctor + e() ✓")
+            XposedBridge.log("TankeHook[ScanLogin]: hooked q2 ctor + g(String) + e() ✓")
         } catch (t: Throwable) {
             XposedBridge.log("TankeHook[ScanLogin]: q2 hook failed: ${t}")
         }
     }
 
-        // ── 过"未安装微信"检查（v0.a 包名检测）────────────────────
+    private fun q2WechatName(): String {
+        return try {
+            // q2.b 常量 = Wechat.NAME；不可达时用字面量
+            "Wechat"
+        } catch (_: Throwable) { "Wechat" }
+    }
 
     private fun hookWechatInstalledCheck(classLoader: ClassLoader) {
         for (sig in arrayOf(
