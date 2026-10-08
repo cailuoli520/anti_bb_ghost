@@ -80,6 +80,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                         AdHooks.onClassLoaded(name, loader, clazz)
                         DetectionBypassHooks.onClassLoaded(name, loader)
                         GeetestHooks.onClassLoaded(name, clazz)
+                        ScanLoginHooks.onClassLoaded(name, loader, clazz)
                     } finally {
                         isInstallingHooks.set(false)
                     }
@@ -113,6 +114,11 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
         if (name.startsWith("com.kwad")) return true
         if (name.startsWith("com.bytedance.sdk.openadsdk")) return true
         if (name.startsWith("com.lptiyu.tanke") && name.contains("Splash")) return true
+        if (name.startsWith("com.lptiyu.tanke.utils.q2")) return true
+        if (name.startsWith("com.lptiyu.tanke.utils.v0")) return true
+        if (name.startsWith("cn.sharesdk.wechat")) return true
+        if (name.startsWith("cn.sharesdk.framework.PlatformDb")) return true
+        if (name.startsWith("h.x.c.q.f2")) return true
         if (name.contains("HostnameVerifier")) return true
         return false
     }

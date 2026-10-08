@@ -27,6 +27,9 @@ import org.json.JSONObject
 object ScanLoginHooks {
 
     private var installed = false
+    private var q2Hooked = false
+    private var v0Hooked = false
+    private var checkAuthHooked = false
     /** 捕获的 q2(ThirdLoginHelper) 实例，兜底路径需要 */
     @Volatile private var helperInstance: Any? = null
 
@@ -35,15 +38,47 @@ object ScanLoginHooks {
         if (installed) return
         installed = true
 
-        hookHelperConstructor(classLoader)
-        hookLoginEntry(classLoader)
-        hookWechatInstalledCheck(classLoader)
-        hookShareSdkAuthorize(classLoader)
+        // SecNeo 壳启动时真实类未解密：先注册延迟装钩，
+        // 真实类经 ClassLoader.loadClass 加载时由 onClassLoaded 补装。
+        installNow(classLoader)   // 万一已解密（热路径）直接装
     }
 
-    // ── 捕获 q2 实例（兜底注入用）──────────────────────────────
+    /** ClassLoader monitor 回调：目标类真正可用时装钩。 */
+    fun onClassLoaded(name: String, loader: ClassLoader, clazz: Class<*>) {
+        if (!HookPrefs.scanOn) return
+        when {
+            name == "com.lptiyu.tanke.utils.q2" && !q2Hooked -> {
+                q2Hooked = true
+                hookQ2(loader)
+            }
+            name == "com.lptiyu.tanke.utils.v0" && !v0Hooked -> {
+                v0Hooked = true
+                hookWechatInstalledCheck(loader)
+            }
+            name == "cn.sharesdk.wechat.friends.Wechat" && !checkAuthHooked -> {
+                checkAuthHooked = true
+                hookShareSdkAuthorize(loader)
+            }
+        }
+    }
 
-    private fun hookHelperConstructor(classLoader: ClassLoader) {
+    private fun installNow(classLoader: ClassLoader) {
+        try {
+            Class.forName("com.lptiyu.tanke.utils.q2", false, classLoader)
+            q2Hooked = true; hookQ2(classLoader)
+        } catch (_: Throwable) { }
+        try {
+            Class.forName("com.lptiyu.tanke.utils.v0", false, classLoader)
+            v0Hooked = true; hookWechatInstalledCheck(classLoader)
+        } catch (_: Throwable) { }
+        try {
+            Class.forName("cn.sharesdk.wechat.friends.Wechat", false, classLoader)
+            checkAuthHooked = true; hookShareSdkAuthorize(classLoader)
+        } catch (_: Throwable) { }
+        XposedBridge.log("TankeHook[ScanLogin]: installed (q2=$q2Hooked v0=$v0Hooked wx=$checkAuthHooked)")
+    }
+
+    private fun hookQ2(classLoader: ClassLoader) {
         try {
             XposedHelpers.findAndHookConstructor(
                 "com.lptiyu.tanke.utils.q2", classLoader,
@@ -54,15 +89,6 @@ object ScanLoginHooks {
                     }
                 }
             )
-        } catch (t: Throwable) {
-            XposedBridge.log("TankeHook[ScanLogin]: q2 ctor hook failed: ${t.message}")
-        }
-    }
-
-    // ── 主注入点：q2.e()（微信登录按钮逻辑）───────────────────
-
-    private fun hookLoginEntry(classLoader: ClassLoader) {
-        try {
             XposedHelpers.findAndHookMethod(
                 "com.lptiyu.tanke.utils.q2", classLoader, "e",
                 object : XC_MethodHook() {
@@ -72,13 +98,13 @@ object ScanLoginHooks {
                     }
                 }
             )
-            XposedBridge.log("TankeHook[ScanLogin]: hooked q2.e() (login button)")
+            XposedBridge.log("TankeHook[ScanLogin]: hooked q2 ctor + e() ✓")
         } catch (t: Throwable) {
-            XposedBridge.log("TankeHook[ScanLogin]: q2.e hook failed: ${t.message}")
+            XposedBridge.log("TankeHook[ScanLogin]: q2 hook failed: ${t}")
         }
     }
 
-    // ── 过"未安装微信"检查（v0.a 包名检测）────────────────────
+        // ── 过"未安装微信"检查（v0.a 包名检测）────────────────────
 
     private fun hookWechatInstalledCheck(classLoader: ClassLoader) {
         for (sig in arrayOf(
