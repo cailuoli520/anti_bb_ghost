@@ -30,6 +30,8 @@ jobs:
       # android-actions/setup-android installs cmdline-tools and accepts licences
       - name: Set up Android SDK (cmdline-tools + licence acceptance)
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - name: Cache Android SDK packages
         uses: actions/cache@v4
