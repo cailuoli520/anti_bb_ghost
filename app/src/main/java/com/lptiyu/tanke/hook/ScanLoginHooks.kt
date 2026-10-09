@@ -32,6 +32,7 @@ object ScanLoginHooks {
     private var checkAuthHooked = false
     private var shareSdkHooked = false
     private var f2Hooked = false
+    private var mmkvHooked = false
     private var injectedOnce = false
     /** HTTP 登录拿到的乐跑 session（uid/token 等），供 f2.i() 读取拦截时使用 */
     @Volatile private var sessionOverride: Map<String, String>? = null
@@ -119,10 +120,10 @@ object ScanLoginHooks {
                 shareSdkHooked = true
                 hookShareSdkGetPlatform(loader)
             }
-            // ShaPrefer(存储门面) 加载即 hook 读函数 —— 注入会话读取
-            name == "com.lptiyu.tanke.utils.f2" && !f2Hooked -> {
-                f2Hooked = true
-                hookShaPreferRead(loader)
+            // MMKV 库类加载即 hook 读方法（MMKV 类可达已验证；方法按签名匹配防混淆）
+            name == "com.tencent.mmkv.MMKV" && !mmkvHooked -> {
+                mmkvHooked = true
+                hookMmkvRead(loader)
             }
         }
     }
@@ -139,6 +140,10 @@ object ScanLoginHooks {
         try {
             Class.forName("cn.sharesdk.wechat.friends.Wechat", false, classLoader)
             checkAuthHooked = true; hookShareSdkAuthorize(classLoader)
+        } catch (_: Throwable) { }
+        try {
+            Class.forName("com.tencent.mmkv.MMKV", false, classLoader)
+            mmkvHooked = true; hookMmkvRead(classLoader)
         } catch (_: Throwable) { }
         XposedBridge.log("TankeHook[ScanLogin]: installed (q2=$q2Hooked v0=$v0Hooked wx=$checkAuthHooked)")
     }
@@ -539,6 +544,40 @@ object ScanLoginHooks {
             XposedBridge.log("TankeHook[ScanLogin]: hooked ShareSDK.getPlatform ✓")
         } catch (t: Throwable) {
             XposedBridge.log("TankeHook[ScanLogin]: ShareSDK.getPlatform hook failed: ${t.message}")
+        }
+    }
+
+    // ── MMKV 读拦截：会话 key 命中时返回注入值 ────────────────
+
+    private fun hookMmkvRead(classLoader: ClassLoader) {
+        try {
+            val cls = XposedHelpers.findClass("com.tencent.mmkv.MMKV", classLoader)
+            // 按签名匹配 getString(String,String) —— 乐跑混淆了方法名？MMKV 库类未混淆，但保险起见双保险
+            val targets = cls.methods.filter {
+                it.parameterTypes.size == 2 &&
+                it.parameterTypes[0] == String::class.java &&
+                it.parameterTypes[1] == String::class.java &&
+                it.returnType == String::class.java
+            }
+            var hooked = 0
+            for (m in targets) {
+                try {
+                    XposedBridge.hookMethod(m, object : XC_MethodHook() {
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            val key = param.args[0] as? String ?: return
+                            val ov = sessionOverride ?: return
+                            if (key in ov) {
+                                param.result = ov[key]
+                                HookPrefs.vlog("ScanLogin: MMKV.get('$key') → override")
+                            }
+                        }
+                    })
+                    hooked++
+                } catch (_: Throwable) {}
+            }
+            XposedBridge.log("TankeHook[ScanLogin]: MMKV read hooked ($hooked methods) ✓")
+        } catch (t: Throwable) {
+            XposedBridge.log("TankeHook[ScanLogin]: hookMmkvRead failed: ${t}")
         }
     }
 

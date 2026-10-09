@@ -122,6 +122,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
         if (name == "com.lptiyu.tanke.activities.LoginHomeActivity") return true
         if (name == "com.lptiyu.tanke.activities.QrLoginActivity") return true
         if (name == "cn.sharesdk.framework.ShareSDK") return true
+        if (name == "com.tencent.mmkv.MMKV") return true
         if (name.startsWith("cn.sharesdk.wechat")) return true
         if (name.startsWith("cn.sharesdk.framework.PlatformDb")) return true
         if (name.startsWith("h.x.c.q.f2")) return true
