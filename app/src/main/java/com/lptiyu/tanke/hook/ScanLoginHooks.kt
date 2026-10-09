@@ -45,9 +45,13 @@ object ScanLoginHooks {
         installNow(classLoader)   // 万一已解密（热路径）直接装
     }
 
+    /** 装载真实(解密后)类的 ClassLoader —— 由 ClassLoader monitor 回调持续更新。 */
+    @Volatile private var realClassLoader: ClassLoader? = null
+
     /** ClassLoader monitor 回调：目标类真正可用时装钩。 */
     fun onClassLoaded(name: String, loader: ClassLoader, clazz: Class<*>) {
         if (!HookPrefs.scanOn) return
+        realClassLoader = loader   // 任何解密类加载都记录其 loader
         when {
             name == "com.lptiyu.tanke.utils.q2" && !q2Hooked -> {
                 q2Hooked = true
@@ -221,29 +225,41 @@ object ScanLoginHooks {
      */
     private fun autoInject(activity: Any?) {
         if (injectedOnce) return
-        if (HookPrefs.scanOpenid.isBlank() || HookPrefs.scanToken.isBlank()) {
+        if (HookPrefs.scanOpenid.isBlank() || (HookPrefs.scanToken.isBlank() && HookPrefs.scanRefresh.isBlank())) {
             XposedBridge.log("TankeHook[ScanLogin]: autoInject skipped — credentials empty")
             return
         }
         injectedOnce = true
-        try {
-            val cl = activity?.javaClass?.classLoader ?: return
-            // 刷新 access_token（2h 过期，refresh 30 天）——直接在模块进程外没法发 HTTPS？
-            // 在目标 app 进程里可以用 HttpURLConnection：
-            val fresh = refreshWxToken()
-            if (fresh != null) {
-                HookPrefs.scanToken = fresh
-                XposedBridge.log("TankeHook[ScanLogin]: wx access_token refreshed ✓")
+        // 整个注入挪到后台线程：网络刷新 + 反射都不能占主线程
+        Thread {
+            try {
+                // 优先用解密类真正的 ClassLoader；fallback 依次: q2已加载的loader / activity 的
+                val cl = realClassLoader
+                    ?: run {
+                        // 尝试用 BootstrapSearch：q2 若已由 monitor 装钩，其 loader 必可用
+                        try { XposedHelpers.findClass("com.lptiyu.tanke.utils.q2", null).classLoader }
+                        catch (_: Throwable) { activity?.javaClass?.classLoader }
+                    }
+                    ?: return@Thread.also {
+                        XposedBridge.log("TankeHook[ScanLogin]: autoInject no classloader available")
+                    }
+                val fresh = refreshWxToken()
+                if (fresh != null) {
+                    HookPrefs.scanToken = fresh
+                    XposedBridge.log("TankeHook[ScanLogin]: wx access_token refreshed ✓")
+                } else if (HookPrefs.scanToken.isBlank()) {
+                    XposedBridge.log("TankeHook[ScanLogin]: no token and refresh failed — abort")
+                    return@Thread
+                }
+                val q2cls = XposedHelpers.findClass("com.lptiyu.tanke.utils.q2", cl)
+                val helper = q2cls.getDeclaredConstructor().newInstance()
+                try { XposedHelpers.callMethod(helper, "h", "") } catch (_: Throwable) {}
+                try { XposedHelpers.callMethod(helper, "k", "") } catch (_: Throwable) {}
+                injectCredentials(helper)
+            } catch (t: Throwable) {
+                XposedBridge.log("TankeHook[ScanLogin]: autoInject failed: ${t}")
             }
-            val q2cls = XposedHelpers.findClass("com.lptiyu.tanke.utils.q2", cl)
-            val helper = q2cls.getDeclaredConstructor().newInstance()
-            // q2.h(appToken) / q2.k(schoolId) 可选 —— 传空让 d() 跳过
-            try { XposedHelpers.callMethod(helper, "h", "") } catch (_: Throwable) {}
-            try { XposedHelpers.callMethod(helper, "k", "") } catch (_: Throwable) {}
-            injectCredentials(helper)
-        } catch (t: Throwable) {
-            XposedBridge.log("TankeHook[ScanLogin]: autoInject failed: ${t}")
-        }
+        }.start()
     }
 
     /** 用 refresh_token 换新 access_token（在目标 app 进程内执行，网络可用）。 */
@@ -251,6 +267,7 @@ object ScanLoginHooks {
         return try {
             val rt = HookPrefs.scanRefresh
             if (rt.isBlank()) return null
+            Thread.sleep(50) // 已在后台线程
             val url = java.net.URL(
                 "https://api.weixin.qq.com/sns/oauth2/refresh_token?appid=wx5a2e1ff396785475" +
                 "&grant_type=refresh_token&refresh_token=" + java.net.URLEncoder.encode(rt, "UTF-8")
@@ -259,10 +276,11 @@ object ScanLoginHooks {
             conn.connectTimeout = 8000; conn.readTimeout = 8000
             val body = conn.inputStream.bufferedReader().readText()
             conn.disconnect()
+            XposedBridge.log("TankeHook[ScanLogin]: refresh resp: ${body.take(80)}")
             val jo = org.json.JSONObject(body)
             if (jo.has("access_token")) jo.getString("access_token") else null
         } catch (t: Throwable) {
-            XposedBridge.log("TankeHook[ScanLogin]: refreshWxToken failed: ${t.message}")
+            XposedBridge.log("TankeHook[ScanLogin]: refreshWxToken failed: ${t}")
             null
         }
     }
