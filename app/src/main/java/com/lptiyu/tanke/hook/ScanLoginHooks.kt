@@ -380,46 +380,32 @@ object ScanLoginHooks {
                 "user_nickname" to HookPrefs.scanNickname.ifBlank { session.optString("name") },
                 "user_avatar_url" to session.optString("img"),
                 "register_type" to "3",
-                "is_check_protocol" to "1"
+                "is_check_protocol" to "1",
+                "is_agree" to "1",
+                "is_first_in_app" to "0"
             )
-            // f2(ShaPrefor) 是乐跑自己的存储门面: f2.a(key, String) 内部走 MMKV —— 用它的 loader 调它自己的方法
-            val cl = findLoaderAnywhere("com.lptiyu.tanke.utils.f2")
-                ?: ctx.classLoader
-            val f2cls = XposedHelpers.findClass("com.lptiyu.tanke.utils.f2", cl)
-            val put = f2cls.getMethod("a", String::class.java, Object::class.java)
-            for ((k, v) in fields) put.invoke(null, k, v)
-            // f2.d() = commit
-            try { f2cls.getMethod("d").invoke(null) } catch (_: Throwable) {}
-            XposedBridge.log("TankeHook[ScanLogin]: session written via f2.a() ✓ (uid=$uid)")
-        } catch (t: Throwable) {
-            XposedBridge.log("TankeHook[ScanLogin]: writeSessionToMmkv(f2) failed: ${t}")
-            // 兜底：反射 MMKV 直调 v0("setting")
-            try {
-                val mmkvCls = XposedHelpers.findClass("com.tencent.mmkv.MMKV", ctx.classLoader)
-                val inst = mmkvCls.getMethod("v0", String::class.java).invoke(null, "setting")
-                val encode = inst.javaClass.methods.first {
-                    it.name == "encode" &&
-                    it.parameterTypes.size == 2 &&
-                    it.parameterTypes[0] == String::class.java &&
-                    it.parameterTypes[1] == String::class.java
+            // ── 迁移通道：写旧版 SharedPreferences("setting") + 删 MMKV 文件 ──
+            // f2.b()（ShaPrefer 初始化）: b=MMKV.v0("setting"); b.d0(legacySp); legacySp.clear()
+            // → 乐跑下次启动读配置时自动把 sp 值迁入 MMKV，登录态生效。零类依赖。
+            val sp = ctx.getSharedPreferences("setting", android.content.Context.MODE_PRIVATE)
+            val ed = sp.edit()
+            for ((k, v) in fields) ed.putString(k, v)
+            ed.putBoolean("is_agree", true)
+            ed.putBoolean("is_first_in_app", false)
+            val committed = ed.commit()
+            // 删 MMKV 数据文件，强制下次启动走迁移
+            val mmkvDir = java.io.File(ctx.filesDir, "mmkv")
+            var wiped = false
+            if (mmkvDir.isDirectory) {
+                mmkvDir.listFiles()?.forEach { f ->
+                    if (f.name == "setting" || f.name == "setting.crc" || f.name == "ID" || f.name == "ID.crc") {
+                        wiped = wiped or f.delete()
+                    }
                 }
-                val uid = session.optLong("uid", 0)
-                val fields = mapOf(
-                    "user_openId" to HookPrefs.scanOpenid,
-                    "user_access_token" to HookPrefs.scanToken,
-                    "access_token" to session.optString("access_token"),
-                    "refresh_token" to session.optString("refresh_token"),
-                    "user_id" to uid.toString(),
-                    "user_nickname" to HookPrefs.scanNickname.ifBlank { session.optString("name") },
-                    "user_avatar_url" to session.optString("img"),
-                    "register_type" to "3",
-                    "is_check_protocol" to "1"
-                )
-                for ((k, v) in fields) encode.invoke(inst, k, v)
-                XposedBridge.log("TankeHook[ScanLogin]: session written via MMKV.v0 fallback ✓ (uid=$uid)")
-            } catch (t2: Throwable) {
-                XposedBridge.log("TankeHook[ScanLogin]: MMKV.v0 fallback also failed: ${t2}")
             }
+            XposedBridge.log("TankeHook[ScanLogin]: sp written=$committed mmkvWiped=$wiped — migration will import ${fields.size} fields (uid=$uid)")
+        } catch (t: Throwable) {
+            XposedBridge.log("TankeHook[ScanLogin]: writeSession failed: ${t}")
         }
     }
 
