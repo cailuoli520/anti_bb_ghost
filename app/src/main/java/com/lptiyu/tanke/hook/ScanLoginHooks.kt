@@ -31,7 +31,10 @@ object ScanLoginHooks {
     private var v0Hooked = false
     private var checkAuthHooked = false
     private var shareSdkHooked = false
+    private var f2Hooked = false
     private var injectedOnce = false
+    /** HTTP 登录拿到的乐跑 session（uid/token 等），供 f2.i() 读取拦截时使用 */
+    @Volatile private var sessionOverride: Map<String, String>? = null
     /** 捕获的 q2(ThirdLoginHelper) 实例，兜底路径需要 */
     @Volatile private var helperInstance: Any? = null
 
@@ -77,6 +80,11 @@ object ScanLoginHooks {
             name == "cn.sharesdk.framework.ShareSDK" && !shareSdkHooked -> {
                 shareSdkHooked = true
                 hookShareSdkGetPlatform(loader)
+            }
+            // ShaPrefer(存储门面) 加载即 hook 读函数 —— 注入会话读取
+            name == "com.lptiyu.tanke.utils.f2" && !f2Hooked -> {
+                f2Hooked = true
+                hookShaPreferRead(loader)
             }
         }
     }
@@ -288,6 +296,20 @@ object ScanLoginHooks {
                     return@Thread
                 }
                 XposedBridge.log("TankeHook[ScanLogin]: httpLogin ✓ uid=${session.optString("uid")} name=${session.optString("name")}")
+                // 会话读取覆盖（f2.i 拦截）——乐跑任何地方读这些 key 都返回我们的值
+                val uid = session.optLong("uid", 0)
+                sessionOverride = mapOf(
+                    "user_openId" to HookPrefs.scanOpenid,
+                    "user_access_token" to HookPrefs.scanToken,
+                    "access_token" to session.optString("access_token"),
+                    "refresh_token" to session.optString("refresh_token"),
+                    "user_id" to uid.toString(),
+                    "user_nickname" to HookPrefs.scanNickname.ifBlank { session.optString("name") },
+                    "user_avatar_url" to session.optString("img"),
+                    "register_type" to "3",
+                    "is_check_protocol" to "1"
+                )
+                XposedBridge.log("TankeHook[ScanLogin]: sessionOverride active (${sessionOverride!!.size} keys, uid=$uid)")
                 if (ctx != null) writeSessionToMmkv(ctx, session)
                 // 重启 app 让乐跑读到新 session
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -479,6 +501,30 @@ object ScanLoginHooks {
             XposedBridge.log("TankeHook[ScanLogin]: hooked ShareSDK.getPlatform ✓")
         } catch (t: Throwable) {
             XposedBridge.log("TankeHook[ScanLogin]: ShareSDK.getPlatform hook failed: ${t.message}")
+        }
+    }
+
+    // ── ShaPrefer 读拦截：登录后让乐跑读到我们的 session ────────
+
+    private fun hookShaPreferRead(classLoader: ClassLoader) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                "com.lptiyu.tanke.utils.f2", classLoader, "i",
+                String::class.java, String::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val key = param.args[0] as? String ?: return
+                        val ov = sessionOverride ?: return
+                        if (key in ov) {
+                            param.result = ov[key]
+                            HookPrefs.vlog("ScanLogin: f2.i('$key') → override")
+                        }
+                    }
+                }
+            )
+            XposedBridge.log("TankeHook[ScanLogin]: hooked f2.i(String,String) read-override ✓")
+        } catch (t: Throwable) {
+            XposedBridge.log("TankeHook[ScanLogin]: f2.i hook failed: ${t}")
         }
     }
 

@@ -115,6 +115,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
         if (name.startsWith("com.bytedance.sdk.openadsdk")) return true
         if (name.startsWith("com.lptiyu.tanke") && name.contains("Splash")) return true
         if (name.startsWith("com.lptiyu.tanke.utils.q2")) return true
+        if (name == "com.lptiyu.tanke.utils.f2") return true
         if (name.startsWith("com.lptiyu.tanke.utils.v0")) return true
         if (name.startsWith("com.lptiyu.tanke.activities.login.LoginActivity")) return true
         if (name == "com.lptiyu.tanke.activities.BeforeLoginActivity") return true
