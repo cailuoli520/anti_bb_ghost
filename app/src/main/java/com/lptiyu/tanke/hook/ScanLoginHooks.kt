@@ -371,7 +371,7 @@ object ScanLoginHooks {
     private fun writeSessionToMmkv(ctx: android.content.Context, session: org.json.JSONObject) {
         try {
             val uid = session.optLong("uid", 0)
-            val map = mapOf(
+            val fields = mapOf(
                 "user_openId" to HookPrefs.scanOpenid,
                 "user_access_token" to HookPrefs.scanToken,
                 "access_token" to session.optString("access_token"),
@@ -382,27 +382,44 @@ object ScanLoginHooks {
                 "register_type" to "3",
                 "is_check_protocol" to "1"
             )
-            val mmkvCls = XposedHelpers.findClass("com.tencent.mmkv.MMKV", ctx.classLoader)
-            // 乐跑的 MMKV 实例是 mmkvWithID("setting")（文件 files/mmkv/setting 已验证）——逐个试
-            val instance: Any? = sequenceOf(
-                { mmkvCls.getMethod("mmkvWithID", String::class.java).invoke(null, "setting") },
-                { mmkvCls.getMethod("defaultMMKV").invoke(null) },
-                { mmkvCls.getMethod("defaultMMKV", Int::class.javaPrimitiveType).invoke(null, 0) },
-                { mmkvCls.getMethod("mmkvWithID", String::class.java, Int::class.javaPrimitiveType).invoke(null, "setting", 0) }
-            ).map { runCatching(it).getOrNull() }.firstOrNull { it != null }
-            if (instance == null) {
-                // dump 所有静态方法名帮助诊断
-                val methods = mmkvCls.methods.filter { java.lang.reflect.Modifier.isStatic(it.modifiers) }
-                    .joinToString(", ") { it.name + "(" + it.parameterTypes.joinToString { p -> p.simpleName } + ")" }
-                XposedBridge.log("TankeHook[ScanLogin]: MMKV static methods: $methods")
-                throw IllegalStateException("no MMKV instance factory matched")
-            }
-            val encode = instance.javaClass.getMethod("encode", String::class.java, String::class.java)
-            for ((k, v) in map) encode.invoke(instance, k, v)
-            try { instance.javaClass.getMethod("sync").invoke(instance) } catch (_: Throwable) {}
-            XposedBridge.log("TankeHook[ScanLogin]: session written to MMKV ✓ (uid=$uid, via ${instance.javaClass.simpleName})")
+            // f2(ShaPrefor) 是乐跑自己的存储门面: f2.a(key, String) 内部走 MMKV —— 用它的 loader 调它自己的方法
+            val cl = findLoaderAnywhere("com.lptiyu.tanke.utils.f2")
+                ?: ctx.classLoader
+            val f2cls = XposedHelpers.findClass("com.lptiyu.tanke.utils.f2", cl)
+            val put = f2cls.getMethod("a", String::class.java, Object::class.java)
+            for ((k, v) in fields) put.invoke(null, k, v)
+            // f2.d() = commit
+            try { f2cls.getMethod("d").invoke(null) } catch (_: Throwable) {}
+            XposedBridge.log("TankeHook[ScanLogin]: session written via f2.a() ✓ (uid=$uid)")
         } catch (t: Throwable) {
-            XposedBridge.log("TankeHook[ScanLogin]: writeSessionToMmkv failed: ${t}")
+            XposedBridge.log("TankeHook[ScanLogin]: writeSessionToMmkv(f2) failed: ${t}")
+            // 兜底：反射 MMKV 直调 v0("setting")
+            try {
+                val mmkvCls = XposedHelpers.findClass("com.tencent.mmkv.MMKV", ctx.classLoader)
+                val inst = mmkvCls.getMethod("v0", String::class.java).invoke(null, "setting")
+                val encode = inst.javaClass.methods.first {
+                    it.name == "encode" &&
+                    it.parameterTypes.size == 2 &&
+                    it.parameterTypes[0] == String::class.java &&
+                    it.parameterTypes[1] == String::class.java
+                }
+                val uid = session.optLong("uid", 0)
+                val fields = mapOf(
+                    "user_openId" to HookPrefs.scanOpenid,
+                    "user_access_token" to HookPrefs.scanToken,
+                    "access_token" to session.optString("access_token"),
+                    "refresh_token" to session.optString("refresh_token"),
+                    "user_id" to uid.toString(),
+                    "user_nickname" to HookPrefs.scanNickname.ifBlank { session.optString("name") },
+                    "user_avatar_url" to session.optString("img"),
+                    "register_type" to "3",
+                    "is_check_protocol" to "1"
+                )
+                for ((k, v) in fields) encode.invoke(inst, k, v)
+                XposedBridge.log("TankeHook[ScanLogin]: session written via MMKV.v0 fallback ✓ (uid=$uid)")
+            } catch (t2: Throwable) {
+                XposedBridge.log("TankeHook[ScanLogin]: MMKV.v0 fallback also failed: ${t2}")
+            }
         }
     }
 
