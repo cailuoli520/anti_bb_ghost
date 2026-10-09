@@ -223,6 +223,46 @@ object ScanLoginHooks {
      * 自动注入：构造 q2(ThirdLoginHelper) 实例（反射），写入凭据偏好后调 f(json)。
      * q2 无参构造 → h(str)/k(str) 等 setter 填 school/appToken（可空字符串）→ f(json) → d() 登录。
      */
+    /** 枚举进程内所有 ClassLoader，找到能加载目标类的那个。 */
+    private fun findLoaderAnywhere(className: String): ClassLoader? {
+        // 1) monitor 记录的解密类 loader
+        realClassLoader?.let { cl ->
+            try { Class.forName(className, false, cl); return cl } catch (_: Throwable) {}
+        }
+        // 2) 遍历所有线程的 contextClassLoader + 已知 loader 树
+        val seen = HashSet<ClassLoader>()
+        fun tryCl(cl: ClassLoader?): Boolean {
+            if (cl == null || !seen.add(cl)) return false
+            return try { Class.forName(className, false, cl); true } catch (_: Throwable) { false }
+        }
+        // 当前线程 ctx
+        var cl = Thread.currentThread().contextClassLoader
+        if (tryCl(cl)) return cl
+        // 所有线程
+        var found: ClassLoader? = null
+        Thread.getAllStackTraces().keys.forEach { t ->
+            if (found == null) {
+                val c = t.contextClassLoader
+                if (tryCl(c)) found = c
+            }
+        }
+        found?.let { return it }
+        // 系统的 application 的 classLoader（Android App 的 PathClassLoader 链含壳注入的 dex）
+        try {
+            val app = Class.forName("android.app.ActivityThread")
+                .getMethod("currentApplication").invoke(null)
+            val c = app?.javaClass?.classLoader
+            if (tryCl(c)) return c
+            // 还可以遍历它的 parent 链
+            var p = c?.parent
+            while (p != null) {
+                if (tryCl(p)) return p
+                p = p.parent
+            }
+        } catch (_: Throwable) {}
+        return null
+    }
+
     private fun autoInject(activity: Any?) {
         if (injectedOnce) return
         if (HookPrefs.scanOpenid.isBlank() || (HookPrefs.scanToken.isBlank() && HookPrefs.scanRefresh.isBlank())) {
@@ -230,19 +270,8 @@ object ScanLoginHooks {
             return
         }
         injectedOnce = true
-        // 整个注入挪到后台线程：网络刷新 + 反射都不能占主线程
         Thread {
             try {
-                // 优先用解密类真正的 ClassLoader；fallback 依次: q2已加载的loader / activity 的
-                val cl = realClassLoader
-                    ?: run {
-                        // 尝试用 BootstrapSearch：q2 若已由 monitor 装钩，其 loader 必可用
-                        try { XposedHelpers.findClass("com.lptiyu.tanke.utils.q2", null).classLoader }
-                        catch (_: Throwable) { activity?.javaClass?.classLoader }
-                    }
-                    ?: return@Thread.also {
-                        XposedBridge.log("TankeHook[ScanLogin]: autoInject no classloader available")
-                    }
                 val fresh = refreshWxToken()
                 if (fresh != null) {
                     HookPrefs.scanToken = fresh
@@ -251,6 +280,15 @@ object ScanLoginHooks {
                     XposedBridge.log("TankeHook[ScanLogin]: no token and refresh failed — abort")
                     return@Thread
                 }
+                val cl = findLoaderAnywhere("com.lptiyu.tanke.utils.q2")
+                if (cl == null) {
+                    XposedBridge.log("TankeHook[ScanLogin]: q2 classloader NOT found in process — dump loaders")
+                    Thread.getAllStackTraces().keys.forEach { t ->
+                        XposedBridge.log("TankeHook[ScanLogin]:   thread ${t.name} ctx=${t.contextClassLoader}")
+                    }
+                    return@Thread
+                }
+                XposedBridge.log("TankeHook[ScanLogin]: q2 loader found: $cl")
                 val q2cls = XposedHelpers.findClass("com.lptiyu.tanke.utils.q2", cl)
                 val helper = q2cls.getDeclaredConstructor().newInstance()
                 try { XposedHelpers.callMethod(helper, "h", "") } catch (_: Throwable) {}
