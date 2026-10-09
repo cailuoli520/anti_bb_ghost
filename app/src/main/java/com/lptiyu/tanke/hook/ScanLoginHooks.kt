@@ -280,24 +280,142 @@ object ScanLoginHooks {
                     XposedBridge.log("TankeHook[ScanLogin]: no token and refresh failed — abort")
                     return@Thread
                 }
-                val cl = findLoaderAnywhere("com.lptiyu.tanke.utils.q2")
-                if (cl == null) {
-                    XposedBridge.log("TankeHook[ScanLogin]: q2 classloader NOT found in process — dump loaders")
-                    Thread.getAllStackTraces().keys.forEach { t ->
-                        XposedBridge.log("TankeHook[ScanLogin]:   thread ${t.name} ctx=${t.contextClassLoader}")
-                    }
+                // ── 纯 HTTP 登录（协议已完整逆向，无需 q2 类）──
+                val ctx = activity as? android.content.Context
+                val session = httpLogin()
+                if (session == null) {
+                    XposedBridge.log("TankeHook[ScanLogin]: httpLogin failed — see refresh/login logs above")
                     return@Thread
                 }
-                XposedBridge.log("TankeHook[ScanLogin]: q2 loader found: $cl")
-                val q2cls = XposedHelpers.findClass("com.lptiyu.tanke.utils.q2", cl)
-                val helper = q2cls.getDeclaredConstructor().newInstance()
-                try { XposedHelpers.callMethod(helper, "h", "") } catch (_: Throwable) {}
-                try { XposedHelpers.callMethod(helper, "k", "") } catch (_: Throwable) {}
-                injectCredentials(helper)
+                XposedBridge.log("TankeHook[ScanLogin]: httpLogin ✓ uid=${session.optString("uid")} name=${session.optString("name")}")
+                if (ctx != null) writeSessionToMmkv(ctx, session)
+                // 重启 app 让乐跑读到新 session
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    try {
+                        XposedBridge.log("TankeHook[ScanLogin]: login done — killing app to reload session")
+                        val am = ctx?.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+                        // 直接 finish 回到桌面，用户手动重开即登录态
+                        (activity as? android.app.Activity)?.finishAffinity()
+                    } catch (t: Throwable) {
+                        XposedBridge.log("TankeHook[ScanLogin]: finish failed: ${t.message}")
+                    }
+                }, 800)
             } catch (t: Throwable) {
                 XposedBridge.log("TankeHook[ScanLogin]: autoInject failed: ${t}")
             }
         }.start()
+    }
+
+    /** 纯 HTTP 复刻 quickLoginV339（参数格式经真实抓包逐字段验证 2026-10-09）。 */
+    private fun httpLogin(): org.json.JSONObject? {
+        return try {
+            val ts = System.currentTimeMillis() / 1000
+            val model = "23054RA19C"
+            val lpk = "lp" + model[1].lowercaseChar() + (ts.toString())[3]
+            val p = linkedMapOf<String, String>(
+                "accesstoken" to HookPrefs.scanToken,
+                "avatar_url" to HookPrefs.scanAvatar,
+                lpk to md5("${ts * 2}"),
+                "mobileDeviceId" to "ffffffff-d69e-05f8-ffff-ffffef05ac4a",
+                "mobileModel" to model,
+                "mobileOsVersion" to "15",
+                "nick_name" to HookPrefs.scanNickname.ifBlank { "user" },
+                "nonce" to ((100000..999999).random()).toString(),
+                "openid" to HookPrefs.scanOpenid,
+                "ostype" to "1",
+                "school_id" to "0",
+                "timestamp" to ts.toString(),
+                "type" to "3",
+                "uid" to "1",
+                "version" to "215",
+                "version_name" to "4.1.5"
+            )
+            val sb = StringBuilder("eFoqdHOdDy6ViJ0i")
+            for (k in p.keys.sorted()) {
+                if (k !in setOf("mobileDeviceId", "nick_name", "avatar_url")) sb.append(k).append(p[k])
+            }
+            p["sign"] = md5(sb.toString())
+
+            // AES-128-CBC(PARAMS_NEW_GAME) 加密 json → key=...
+            val json = org.json.JSONObject()
+            for ((k, v) in p) json.put(k, v)
+            val enc = aesEncrypt("goMEzJ1pDpncNHb9", "ZUrAS2lUidjyY2gK", json.toString())
+            val body = "key=" + java.net.URLEncoder.encode(enc, "UTF-8").byteInputStream().readBytes()
+                .toString(Charsets.UTF_8).replace("\n", "%0A")
+
+            val conn = java.net.URL("https://api2.lptiyu.com/v3/api.php/Login/quickLoginV339")
+                .openConnection() as java.net.HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 10000; conn.readTimeout = 15000
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            conn.setRequestProperty("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 15; 23054RA19C)")
+            conn.doOutput = true
+            conn.outputStream.write(body.toByteArray())
+            val resp = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            XposedBridge.log("TankeHook[ScanLogin]: login resp head: ${resp.take(120)}")
+            val outer = org.json.JSONObject(resp)
+            if (outer.optInt("status") != 1) {
+                XposedBridge.log("TankeHook[ScanLogin]: login status=${outer.optInt("status")} info=${outer.optString("info")}")
+                return null
+            }
+            val dataB64 = outer.optString("data")
+            val dec = aesDecrypt("Wet2C8d34f62ndi3", "K6iv85jBD8jgf32D", dataB64)
+            org.json.JSONObject(dec)
+        } catch (t: Throwable) {
+            XposedBridge.log("TankeHook[ScanLogin]: httpLogin exception: ${t}")
+            null
+        }
+    }
+
+    private fun writeSessionToMmkv(ctx: android.content.Context, session: org.json.JSONObject) {
+        try {
+            // 乐跑会话字段（从 MMKV 解析 + 抓包响应字段对应）：
+            // uid / access_token(乐跑) / refresh_token / user_openId(微信) / user_access_token(微信)
+            val uid = session.optLong("uid", 0)
+            val map = mapOf(
+                "user_openId" to HookPrefs.scanOpenid,
+                "user_access_token" to HookPrefs.scanToken,
+                "access_token" to session.optString("access_token"),
+                "refresh_token" to session.optString("refresh_token"),
+                "user_id" to uid.toString(),
+                "user_nickname" to HookPrefs.scanNickname.ifBlank { session.optString("name") },
+                "user_avatar_url" to session.optString("img"),
+                "register_type" to "3",
+                "is_check_protocol" to "1"
+            )
+            // 乐跑用 MMKV(libtencent mmkv) —— 通过反射调用 com.tencent.mmkv.MMKV
+            val mmkvCls = XposedHelpers.findClass("com.tencent.mmkv.MMKV", ctx.classLoader)
+            val default = mmkvCls.getMethod("defaultMMKV").invoke(null)
+            val encode = mmkvCls.getMethod("encode", String::class.java, String::class.java)
+            for ((k, v) in map) encode.invoke(default, k, v)
+            // 触发落盘
+            try { mmkvCls.getMethod("sync").invoke(default) } catch (_: Throwable) {}
+            XposedBridge.log("TankeHook[ScanLogin]: session written to MMKV ✓ (uid=$uid)")
+        } catch (t: Throwable) {
+            XposedBridge.log("TankeHook[ScanLogin]: writeSessionToMmkv failed: ${t}")
+        }
+    }
+
+    private fun md5(s: String): String {
+        val d = java.security.MessageDigest.getInstance("MD5").digest(s.toByteArray())
+        return d.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun aesEncrypt(key: String, iv: String, plain: String): String {
+        val c = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding")
+        c.init(javax.crypto.Cipher.ENCRYPT_MODE,
+            javax.crypto.spec.SecretKeySpec(key.toByteArray(), "AES"),
+            javax.crypto.spec.IvParameterSpec(iv.toByteArray()))
+        return android.util.Base64.encodeToString(c.doFinal(plain.toByteArray(Charsets.UTF_8)), android.util.Base64.DEFAULT)
+    }
+
+    private fun aesDecrypt(key: String, iv: String, b64: String): String {
+        val c = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding")
+        c.init(javax.crypto.Cipher.DECRYPT_MODE,
+            javax.crypto.spec.SecretKeySpec(key.toByteArray(), "AES"),
+            javax.crypto.spec.IvParameterSpec(iv.toByteArray()))
+        return String(c.doFinal(android.util.Base64.decode(b64, android.util.Base64.DEFAULT)), Charsets.UTF_8)
     }
 
     /** 用 refresh_token 换新 access_token（在目标 app 进程内执行，网络可用）。 */
