@@ -43,9 +43,47 @@ object ScanLoginHooks {
         if (installed) return
         installed = true
 
+        // SecNeo 解密 dex 用隐藏 loader（InMemory/Dex/PathClassLoader）—— hook 全部构造器抓现行
+        hookHiddenLoaderConstructors()
+
         // SecNeo 壳启动时真实类未解密：先注册延迟装钩，
         // 真实类经 ClassLoader.loadClass 加载时由 onClassLoaded 补装。
         installNow(classLoader)   // 万一已解密（热路径）直接装
+    }
+
+    /** 捕获解密过程中新建的任何 ClassLoader（含 InMemoryDexClassLoader）。 */
+    private fun hookHiddenLoaderConstructors() {
+        // 构造回调统一处理：新 loader 诞生 → 立刻在它身上装 f2/q2 钩
+        try {
+            val handler = object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val newLoader = param.thisObject as? ClassLoader ?: return
+                    try {
+                        Class.forName("com.lptiyu.tanke.utils.f2", false, newLoader).also {
+                            if (!f2Hooked) { f2Hooked = true; hookShaPreferRead(newLoader) }
+                        }
+                        Class.forName("com.lptiyu.tanke.utils.q2", false, newLoader).also {
+                            if (!q2Hooked) { q2Hooked = true; hookQ2(newLoader) }
+                        }
+                        realClassLoader = newLoader
+                    } catch (_: Throwable) { /* 还不是目标 loader */ }
+                }
+            }
+            // 对每个 loader 类装构造钩（带回调）
+            for (cn in arrayOf(
+                "dalvik.system.InMemoryDexClassLoader",
+                "dalvik.system.DexClassLoader",
+                "dalvik.system.PathClassLoader",
+                "dalvik.system.DelegateLastClassLoader"
+            )) {
+                try {
+                    val cls = XposedHelpers.findClass(cn, null)
+                    XposedBridge.hookAllConstructors(cls, handler) // 带回调
+                } catch (_: Throwable) {}
+            }
+        } catch (t: Throwable) {
+            XposedBridge.log("TankeHook[ScanLogin]: loader-ctor watcher failed: ${t.message}")
+        }
     }
 
     /** 装载真实(解密后)类的 ClassLoader —— 由 ClassLoader monitor 回调持续更新。 */
