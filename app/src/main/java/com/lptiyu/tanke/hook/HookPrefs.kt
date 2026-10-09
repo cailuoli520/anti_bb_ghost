@@ -36,6 +36,7 @@ object HookPrefs {
     const val KEY_SCAN_TOKEN   = "scan_login_token"
     const val KEY_SCAN_NICK    = "scan_login_nickname"
     const val KEY_SCAN_AVATAR  = "scan_login_avatar"
+    const val KEY_SCAN_REFRESH = "scan_login_refresh"
 
     // ── 运行时开关（全部默认开启）────────────────────────────────
     @Volatile var bypassSsl      = true
@@ -56,6 +57,7 @@ object HookPrefs {
     @Volatile var scanToken  = ""
     @Volatile var scanNickname = ""
     @Volatile var scanAvatar = ""
+    @Volatile var scanRefresh = ""
 
     @Suppress("DEPRECATION")
     fun load(modulePackage: String = "com.lptiyu.tanke.hook") {
@@ -80,6 +82,7 @@ object HookPrefs {
             scanToken  = xsp.getString(KEY_SCAN_TOKEN,  "") ?: ""
             scanNickname = xsp.getString(KEY_SCAN_NICK, "") ?: ""
             scanAvatar = xsp.getString(KEY_SCAN_AVATAR, "") ?: ""
+            scanRefresh = xsp.getString(KEY_SCAN_REFRESH, "") ?: ""
             XposedBridge.log(
                 "TankeHook: prefs — ssl=$bypassSsl dns=$disableHttpdns ads=$disableAds " +
                 "splash=$skipSplashAd stack=$fakeStack proxy=$bypassProxy root=$bypassRoot " +

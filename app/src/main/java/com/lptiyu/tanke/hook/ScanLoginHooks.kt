@@ -31,6 +31,7 @@ object ScanLoginHooks {
     private var v0Hooked = false
     private var checkAuthHooked = false
     private var shareSdkHooked = false
+    private var injectedOnce = false
     /** 捕获的 q2(ThirdLoginHelper) 实例，兜底路径需要 */
     @Volatile private var helperInstance: Any? = null
 
@@ -192,7 +193,7 @@ object ScanLoginHooks {
         }
     }
 
-    // ── 登录页生命周期观测：确认用户到达的页面 ────────────────
+    // ── 登录页生命周期观测 + 自动注入 ──────────────────────────
 
     private fun hookLoginActivityLifecycle(clazz: Class<*>) {
         try {
@@ -201,10 +202,69 @@ object ScanLoginHooks {
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         XposedBridge.log("TankeHook[ScanLogin]: ${clazz.simpleName}.onCreate ✓ (user is on this screen)")
+                        // LoginHomeActivity 到达即自动注入（native 按钮不可 hook，绕开 UI）
+                        if (clazz.simpleName == "LoginHomeActivity") {
+                            val act = param.thisObject
+                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                autoInject(act)
+                            }, 1500)
+                        }
                     }
                 }
             )
         } catch (_: Throwable) { }
+    }
+
+    /**
+     * 自动注入：构造 q2(ThirdLoginHelper) 实例（反射），写入凭据偏好后调 f(json)。
+     * q2 无参构造 → h(str)/k(str) 等 setter 填 school/appToken（可空字符串）→ f(json) → d() 登录。
+     */
+    private fun autoInject(activity: Any?) {
+        if (injectedOnce) return
+        if (HookPrefs.scanOpenid.isBlank() || HookPrefs.scanToken.isBlank()) {
+            XposedBridge.log("TankeHook[ScanLogin]: autoInject skipped — credentials empty")
+            return
+        }
+        injectedOnce = true
+        try {
+            val cl = activity?.javaClass?.classLoader ?: return
+            // 刷新 access_token（2h 过期，refresh 30 天）——直接在模块进程外没法发 HTTPS？
+            // 在目标 app 进程里可以用 HttpURLConnection：
+            val fresh = refreshWxToken()
+            if (fresh != null) {
+                HookPrefs.scanToken = fresh
+                XposedBridge.log("TankeHook[ScanLogin]: wx access_token refreshed ✓")
+            }
+            val q2cls = XposedHelpers.findClass("com.lptiyu.tanke.utils.q2", cl)
+            val helper = q2cls.getDeclaredConstructor().newInstance()
+            // q2.h(appToken) / q2.k(schoolId) 可选 —— 传空让 d() 跳过
+            try { XposedHelpers.callMethod(helper, "h", "") } catch (_: Throwable) {}
+            try { XposedHelpers.callMethod(helper, "k", "") } catch (_: Throwable) {}
+            injectCredentials(helper)
+        } catch (t: Throwable) {
+            XposedBridge.log("TankeHook[ScanLogin]: autoInject failed: ${t}")
+        }
+    }
+
+    /** 用 refresh_token 换新 access_token（在目标 app 进程内执行，网络可用）。 */
+    private fun refreshWxToken(): String? {
+        return try {
+            val rt = HookPrefs.scanRefresh
+            if (rt.isBlank()) return null
+            val url = java.net.URL(
+                "https://api.weixin.qq.com/sns/oauth2/refresh_token?appid=wx5a2e1ff396785475" +
+                "&grant_type=refresh_token&refresh_token=" + java.net.URLEncoder.encode(rt, "UTF-8")
+            )
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 8000; conn.readTimeout = 8000
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            val jo = org.json.JSONObject(body)
+            if (jo.has("access_token")) jo.getString("access_token") else null
+        } catch (t: Throwable) {
+            XposedBridge.log("TankeHook[ScanLogin]: refreshWxToken failed: ${t.message}")
+            null
+        }
     }
 
     // ── ShareSDK.getPlatform 万能拦截：任何来源的 Wechat 授权 ──
