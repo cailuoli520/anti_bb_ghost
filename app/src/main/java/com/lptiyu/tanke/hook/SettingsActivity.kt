@@ -86,7 +86,18 @@ class SettingsActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        buildUi()
+        try {
+            buildUi()
+        } catch (t: Throwable) {
+            // 崩溃自显示：把异常直接渲染到屏幕上，无需 logcat
+            val tv = TextView(this).apply {
+                text = android.util.Log.getStackTraceString(t)
+                textSize = 12f
+                setPadding(32, 64, 32, 32)
+                setTextColor(Color.RED)
+            }
+            setContentView(ScrollView(this).apply { addView(tv) })
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -96,7 +107,13 @@ class SettingsActivity : Activity() {
 
     @Suppress("DEPRECATION")
     private fun buildUi() {
-        val prefs = getSharedPreferences(HookPrefs.PREFS_NAME, Context.MODE_WORLD_READABLE)
+        val prefs = try {
+            getSharedPreferences(HookPrefs.PREFS_NAME, Context.MODE_WORLD_READABLE)
+        } catch (t: Throwable) {
+            // 部分系统（targetSdk>=34 严格模式）禁用 MODE_WORLD_READABLE —— 退化为私有，
+            // 模块侧 HookPrefs.load() 的 XSharedPreferences 也会自动兜底
+            getSharedPreferences(HookPrefs.PREFS_NAME, Context.MODE_PRIVATE)
+        }
 
         val root = ScrollView(this).apply {
             setBackgroundColor(colorBackground)
