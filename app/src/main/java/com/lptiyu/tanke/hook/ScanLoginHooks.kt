@@ -370,8 +370,6 @@ object ScanLoginHooks {
 
     private fun writeSessionToMmkv(ctx: android.content.Context, session: org.json.JSONObject) {
         try {
-            // 乐跑会话字段（从 MMKV 解析 + 抓包响应字段对应）：
-            // uid / access_token(乐跑) / refresh_token / user_openId(微信) / user_access_token(微信)
             val uid = session.optLong("uid", 0)
             val map = mapOf(
                 "user_openId" to HookPrefs.scanOpenid,
@@ -384,14 +382,25 @@ object ScanLoginHooks {
                 "register_type" to "3",
                 "is_check_protocol" to "1"
             )
-            // 乐跑用 MMKV(libtencent mmkv) —— 通过反射调用 com.tencent.mmkv.MMKV
             val mmkvCls = XposedHelpers.findClass("com.tencent.mmkv.MMKV", ctx.classLoader)
-            val default = mmkvCls.getMethod("defaultMMKV").invoke(null)
-            val encode = mmkvCls.getMethod("encode", String::class.java, String::class.java)
-            for ((k, v) in map) encode.invoke(default, k, v)
-            // 触发落盘
-            try { mmkvCls.getMethod("sync").invoke(default) } catch (_: Throwable) {}
-            XposedBridge.log("TankeHook[ScanLogin]: session written to MMKV ✓ (uid=$uid)")
+            // 乐跑的 MMKV 实例是 mmkvWithID("setting")（文件 files/mmkv/setting 已验证）——逐个试
+            val instance: Any? = sequenceOf(
+                { mmkvCls.getMethod("mmkvWithID", String::class.java).invoke(null, "setting") },
+                { mmkvCls.getMethod("defaultMMKV").invoke(null) },
+                { mmkvCls.getMethod("defaultMMKV", Int::class.javaPrimitiveType).invoke(null, 0) },
+                { mmkvCls.getMethod("mmkvWithID", String::class.java, Int::class.javaPrimitiveType).invoke(null, "setting", 0) }
+            ).map { runCatching(it).getOrNull() }.firstOrNull { it != null }
+            if (instance == null) {
+                // dump 所有静态方法名帮助诊断
+                val methods = mmkvCls.methods.filter { java.lang.reflect.Modifier.isStatic(it.modifiers) }
+                    .joinToString(", ") { it.name + "(" + it.parameterTypes.joinToString { p -> p.simpleName } + ")" }
+                XposedBridge.log("TankeHook[ScanLogin]: MMKV static methods: $methods")
+                throw IllegalStateException("no MMKV instance factory matched")
+            }
+            val encode = instance.javaClass.getMethod("encode", String::class.java, String::class.java)
+            for ((k, v) in map) encode.invoke(instance, k, v)
+            try { instance.javaClass.getMethod("sync").invoke(instance) } catch (_: Throwable) {}
+            XposedBridge.log("TankeHook[ScanLogin]: session written to MMKV ✓ (uid=$uid, via ${instance.javaClass.simpleName})")
         } catch (t: Throwable) {
             XposedBridge.log("TankeHook[ScanLogin]: writeSessionToMmkv failed: ${t}")
         }
